@@ -94,7 +94,7 @@
 <script src="https://cdn.jsdelivr.net/npm/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
 <script>
   // Dán URL triển khai (Web app) của Apps Script MỚI vào đây
-  const API_URL = 'https://script.google.com/macros/s/AKfycbzxt5Xpjn7n9iD6YBIFbKZRMrnlQQzmEwzHICQZetD90fxevV1euww411qH0Boij4GjnQ/exec';
+  const API_URL = 'DAN_URL_APPS_SCRIPT_VAO_DAY';
   const FIELD_COUNT = 7;
   const DATE_FIELDS = [4, 7];
   const MAX_PARALLEL = 2;         // số mã gửi đồng thời
@@ -232,8 +232,9 @@
     const items = queue.slice(-10).reverse();
     $('list').innerHTML = items.map(it => {
       const cls = it.state === 'send' ? 'wait' : it.state;
-      const label = it.state === 'ok' ? '✔ Đã lưu (dòng ' + it.row + ')'
-                  : it.state === 'dup' ? '⚠ Đã có trong Google Sheet (dòng ' + it.row + '), không ghi lại'
+      const where = (it.sheet ? 'sheet ' + it.sheet + ', ' : '') + 'dòng ' + it.row;
+      const label = it.state === 'ok' ? '✔ Đã lưu (' + where + ')'
+                  : it.state === 'dup' ? '⚠ Đã có trong Google Sheet (' + where + '), không ghi lại'
                   : (it.state === 'wait' || it.state === 'send') ? '⏳ Đang lưu...'
                   : '✘ ' + esc(it.msg);
       let btns = '';
@@ -261,8 +262,8 @@
     it.state = 'send'; active++; render();
     try {
       const r = await api({ action: 'save', token: token, fields: it.f });
-      if (r.ok && r.duplicate) { it.state = 'dup'; it.row = r.row; dupCount++; }
-      else if (r.ok) { it.state = 'ok'; it.row = r.row; savedCount++; }
+      if (r.ok && r.duplicate) { it.state = 'dup'; it.row = r.row; it.sheet = r.sheet; dupCount++; }
+      else if (r.ok) { it.state = 'ok'; it.row = r.row; it.sheet = r.sheet; savedCount++; }
       else if (r.auth === false) { it.state = 'err'; it.msg = 'Hết phiên đăng nhập. Hãy đăng nhập lại rồi bấm Thử lại.'; authLost(); }
       else { it.state = 'err'; it.msg = 'Lưu thất bại: ' + r.error; }
     } catch (e) {
