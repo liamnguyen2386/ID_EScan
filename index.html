@@ -115,6 +115,7 @@
 <div id="readerFile" style="display:none"></div>
 
 <script src="https://cdn.jsdelivr.net/npm/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/zxing-wasm@3.1.6/dist/iife/reader/index.js"></script>
 <script src="config.js"></script>
 <script>
   const FIELD_COUNT = 7;
@@ -363,6 +364,22 @@
     }));
   }
 
+  function loadViaImg(file) {
+    return new Promise((resolve, reject) => {
+      const url = URL.createObjectURL(file);
+      const img = new Image();
+      img.onload = () => { URL.revokeObjectURL(url); resolve(img); };
+      img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('Không mở được ảnh')); };
+      img.src = url;
+    });
+  }
+
+  function loadBitmap(file) {
+    if (window.createImageBitmap) return createImageBitmap(file).catch(() => loadViaImg(file));
+    return loadViaImg(file);
+  }
+
+  // Bộ đọc có sẵn của hệ thống (Chrome/Android), nếu có
   async function nativeDecode(blob) {
     if (!('BarcodeDetector' in window)) return null;
     try {
@@ -373,7 +390,36 @@
     } catch (e) { return null; }
   }
 
-  async function decodeFile(file) {
+  // Bộ đọc chính: zxing-wasm (đọc tốt hơn và nhanh hơn, dùng được cả trên iPhone)
+  async function zxingDecode(bmp) {
+    if (typeof ZXingWASM === 'undefined') return null;
+    const w = bmp.naturalWidth || bmp.width, h = bmp.naturalHeight || bmp.height;
+    const maxDim = Math.max(w, h);
+    const sides = [];
+    [2000, 1400, 1000, 3200].forEach(s => {
+      const v = Math.min(s, maxDim);
+      if (sides.indexOf(v) === -1) sides.push(v);
+    });
+    const opts = { formats: ['QRCode'], tryHarder: true, tryRotate: true, tryInvert: true,
+                   tryDownscale: true, maxNumberOfSymbols: 1 };
+    for (const side of sides) {
+      try {
+        const k = side / maxDim;
+        const c = document.createElement('canvas');
+        c.width = Math.max(1, Math.round(w * k));
+        c.height = Math.max(1, Math.round(h * k));
+        const ctx = c.getContext('2d', { willReadFrequently: true });
+        ctx.drawImage(bmp, 0, 0, c.width, c.height);
+        const res = await ZXingWASM.readBarcodes(ctx.getImageData(0, 0, c.width, c.height), opts);
+        const hit = res.find(r => r.isValid && r.text);
+        if (hit) return hit.text;
+      } catch (e) { return null; }   // không nạp được bộ đọc: dùng cách dự phòng
+    }
+    return null;
+  }
+
+  // Cách dự phòng cuối cùng: html5-qrcode ở nhiều cỡ ảnh
+  async function legacyDecode(file) {
     const s = new Html5Qrcode('readerFile', {
       formatsToSupport: [Html5QrcodeSupportedFormats.QR_CODE],
       experimentalFeatures: { useBarCodeDetectorIfSupported: true }
@@ -384,10 +430,8 @@
         if (size) {
           try { blob = await resizeBlob(file, size); } catch (e) { continue; }
         }
-        let text = await nativeDecode(blob);
-        if (text) return text;
         try {
-          text = await s.scanFile(new File([blob], 'q.jpg', { type: 'image/jpeg' }), false);
+          const text = await s.scanFile(new File([blob], 'q.jpg', { type: 'image/jpeg' }), false);
           if (text) return text;
         } catch (e) {}
       }
@@ -397,27 +441,101 @@
     }
   }
 
-  $('btnScan').onclick = () => {
+  async function decodeFile(file) {
+    let text = await nativeDecode(file);
+    if (text) return text;
+    let bmp = null;
+    try { bmp = await loadBitmap(file); } catch (e) {}
+    if (bmp) {
+      try { text = await zxingDecode(bmp); } finally { if (bmp.close) bmp.close(); }
+      if (text) return text;
+    }
+    return await legacyDecode(file);
+  }
+
+  async function processPhoto(file) {
+    if (photoBusy) return;
+    photoBusy = true;
+    $('btnScan').disabled = true;
+    status('Đang đọc mã QR từ ảnh...', 'wait');
+    let text = null;
+    try { text = await decodeFile(file); } catch (e) {}
+    photoBusy = false;
+    $('btnScan').disabled = false;
+    if (!text) {
+      status('✘ Không đọc được mã trong ảnh. Hãy bấm Scan QR và chụp lại: để mã QR chiếm khoảng 1/3 khung hình, giữ máy cách 15–25 cm, chạm vào mã để lấy nét, tránh chói sáng.', 'err');
+      return;
+    }
+    handleText(text);
+  }
+
+  async function processWebPath(path) {
+    const r = await fetch(path);
+    await processPhoto(await r.blob());
+  }
+
+  // ---------- Camera gốc của Android (app đóng gói bằng Capacitor) ----------
+  function nativePlugin(name) {
+    try {
+      const C = window.Capacitor;
+      if (!C || !(C.isNativePlatform && C.isNativePlatform())) return null;
+      return (C.Plugins && C.Plugins[name]) || (C.registerPlugin ? C.registerPlugin(name) : null);
+    } catch (e) { return null; }
+  }
+  const NativeCamera = nativePlugin('Camera');
+  const NativeApp = nativePlugin('App');
+
+  // Một số máy (ví dụ Honor) đóng app khi mở camera; kết quả ảnh được khôi phục tại đây khi app mở lại
+  if (NativeApp) {
+    NativeApp.addListener('appRestoredResult', async (res) => {
+      if (!res || res.pluginId !== 'Camera' || res.methodName !== 'getPhoto') return;
+      if (res.success && res.data && res.data.webPath) {
+        status('Đang khôi phục ảnh vừa chụp...', 'wait');
+        try { await processWebPath(res.data.webPath); }
+        catch (e) { status('✘ Không đọc được ảnh vừa chụp. Hãy bấm Scan QR và chụp lại.', 'err'); }
+      } else {
+        status('✘ Ảnh vừa chụp bị mất do máy đóng ứng dụng. Hãy bấm Scan QR và chụp lại.', 'err');
+      }
+    });
+  }
+
+  $('btnScan').onclick = async () => {
     if (!apiReady()) { status('Chưa cấu hình URL Apps Script trong config.js.', 'err'); return; }
     if (photoBusy) return;
-    $('file').click();
+    if (!NativeCamera) { $('file').click(); return; }   // iPhone / trình duyệt: dùng ô chọn ảnh
+    let photo = null;
+    try {
+      photo = await NativeCamera.getPhoto({ quality: 92, resultType: 'uri', source: 'CAMERA',
+        direction: 'REAR', correctOrientation: true, saveToGallery: false, allowEditing: false });
+    } catch (e) {
+      const m = String((e && e.message) || e);
+      if (/cancel/i.test(m)) { status(''); return; }
+      if (/denied|permission/i.test(m)) {
+        status('✘ Chưa cấp quyền camera. Hãy vào Cài đặt > Ứng dụng > ID EScan > Quyền và bật Camera.', 'err');
+        return;
+      }
+      status('✘ Không mở được camera: ' + m, 'err');
+      return;
+    }
+    if (photo && photo.webPath) {
+      try { await processWebPath(photo.webPath); }
+      catch (e) { status('✘ Không đọc được ảnh vừa chụp. Hãy bấm Scan QR và chụp lại.', 'err'); }
+    }
   };
 
   $('file').addEventListener('change', async (e) => {
     const file = e.target.files[0];
     e.target.value = '';
-    if (!file || photoBusy) return;
-    photoBusy = true;
-    $('btnScan').disabled = true;
-    status('Đang đọc mã QR từ ảnh...', 'wait');
-    const text = await decodeFile(file);
-    photoBusy = false;
-    $('btnScan').disabled = false;
-    if (!text) {
-      status('✘ Không đọc được mã trong ảnh. Hãy bấm Scan QR và chụp lại, gần hơn, rõ nét hơn và đủ sáng.', 'err');
-      return;
-    }
-    handleText(text);
+    if (file) await processPhoto(file);
+  });
+
+  // Nạp sẵn bộ đọc để lần quét đầu tiên không bị chậm
+  window.addEventListener('load', () => {
+    try {
+      if (typeof ZXingWASM !== 'undefined') {
+        ZXingWASM.readBarcodes(new ImageData(8, 8), { formats: ['QRCode'] }).catch(() => {});
+      }
+    } catch (e) {}
   });
 
   $('btnSendOtp').onclick = sendOtp;
