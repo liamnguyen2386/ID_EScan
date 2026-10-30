@@ -52,6 +52,7 @@ jobs:
           add = ('    <uses-permission android:name="android.permission.CAMERA" />\n'
                  '    <uses-feature android:name="android.hardware.camera" android:required="false" />\n')
           s = s.replace('</manifest>', add + '</manifest>')
+          s = s.replace('<application', '<application android:largeHeap="true"', 1)
           open(p, 'w', encoding='utf-8').write(s)
           PY
 
