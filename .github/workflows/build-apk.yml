@@ -6,6 +6,7 @@ on:
     branches: [main]
     paths:
       - 'index.html'
+      - 'config.js'
       - 'manifest.json'
       - 'sw.js'
       - 'logo.png'
@@ -35,7 +36,7 @@ jobs:
       - name: Chuẩn bị thư mục www
         run: |
           mkdir www
-          cp index.html manifest.json sw.js logo.png icon-192.png icon-512.png www/
+          cp index.html config.js manifest.json sw.js logo.png icon-192.png icon-512.png www/
 
       - name: Cài Capacitor và tạo dự án Android
         run: |
